@@ -1,0 +1,77 @@
+=== SYSTEM ===
+You are a senior IBM z/OS modernization analyst. You read one COBOL paragraph together with statically derived context (callers, PERFORM targets, SQL, file I/O, CRUD, field definitions with PIC/USAGE/offsets) and extract the business logic it implements.
+
+Rules:
+- Use only the code and context provided. Do not invent field meanings, table semantics or upstream behaviour. If something depends on code not shown, say so in "assumptions".
+- Every business rule must cite the 6-digit source line numbers it comes from.
+- Describe behaviour in business terms first, technical terms second.
+- Flag modernization risks: packed/binary arithmetic and rounding, REDEFINES, GO TO, WITH HOLD cursors, commit scope, file-status or SQLCODE handling gaps, dead code.
+- Output a single JSON object matching the schema. No markdown, no prose outside JSON.
+
+=== USER ===
+CONTEXT (static analysis):
+PROGRAM PAYSETL1 [BATCH, DB2, VSAM] | PARAGRAPH 2200-APPLY-HOLDS
+SOURCE: PAYSETL1 line 110-123
+INVOKED BY: PERFORM from 2000-PROCESS-TXN
+SQL: OPEN CSR_PENDING; FETCH CSR_PENDING; CLOSE CSR_PENDING
+CRUD: DB2:PAYMENT_HOLD=R
+MODIFIES: WS-HOLD-ID, WS-HOLD-AMT, WS-ACCT-NO, WS-HOLD-TOTAL
+CHECKS: SQLCODE
+FIELD DEFINITIONS:
+  TXN-ACCT-NO: 05 in TXN-RECORD [TXNREC] pos 17 len 12 PIC X(12) record of FD TXN-FILE
+  WS-ACCT-NO: 05 in WS-WORK-AREAS [PAYWS] pos 1 len 12 PIC X(12)
+  WS-HOLD-TOTAL: 05 in WS-WORK-AREAS [PAYWS] pos 24 len 7 PIC S9(11)V99 COMP-3
+  WS-HOLD-AMT: 05 in WS-WORK-AREAS [PAYWS] pos 17 len 7 PIC S9(11)V99 COMP-3
+  WS-HOLD-ID: 05 in WS-WORK-AREAS [PAYWS] pos 13 len 4 PIC S9(09) COMP
+  SQLCODE: SQLCA - DB2 return code
+
+SOURCE (6-digit line number, column-7 indicator, columns 8-72):
+000110 2200-APPLY-HOLDS.   <PAYSETL1>
+000111     MOVE TXN-ACCT-NO TO WS-ACCT-NO
+000112     MOVE ZERO TO WS-HOLD-TOTAL
+000113     EXEC SQL OPEN CSR_PENDING END-EXEC
+000114     PERFORM UNTIL SQLCODE NOT = 0
+000115        EXEC SQL
+000116           FETCH CSR_PENDING
+000117            INTO :WS-HOLD-ID, :WS-HOLD-AMT
+000118        END-EXEC
+000119        IF SQLCODE = 0
+000120           ADD WS-HOLD-AMT TO WS-HOLD-TOTAL
+000121        END-IF
+000122     END-PERFORM
+000123     EXEC SQL CLOSE CSR_PENDING END-EXEC.
+
+Return JSON with exactly this shape:
+{
+  "purpose": "1-2 sentences, business terms",
+  "business_rules": [
+    {
+      "id": "BR1",
+      "rule": "string",
+      "condition": "string",
+      "action": "string",
+      "source_lines": [
+        123
+      ]
+    }
+  ],
+  "validations": [
+    "string"
+  ],
+  "error_handling": [
+    "string"
+  ],
+  "data_effects": [
+    {
+      "resource": "DB2:TABLE | FILE:NAME | ...",
+      "operation": "C|R|U|D",
+      "description": "string"
+    }
+  ],
+  "migration_notes": [
+    "string"
+  ],
+  "assumptions": [
+    "string"
+  ]
+}

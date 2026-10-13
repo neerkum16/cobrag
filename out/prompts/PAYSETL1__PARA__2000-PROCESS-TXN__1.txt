@@ -1,0 +1,69 @@
+=== SYSTEM ===
+You are a senior IBM z/OS modernization analyst. You read one COBOL paragraph together with statically derived context (callers, PERFORM targets, SQL, file I/O, CRUD, field definitions with PIC/USAGE/offsets) and extract the business logic it implements.
+
+Rules:
+- Use only the code and context provided. Do not invent field meanings, table semantics or upstream behaviour. If something depends on code not shown, say so in "assumptions".
+- Every business rule must cite the 6-digit source line numbers it comes from.
+- Describe behaviour in business terms first, technical terms second.
+- Flag modernization risks: packed/binary arithmetic and rounding, REDEFINES, GO TO, WITH HOLD cursors, commit scope, file-status or SQLCODE handling gaps, dead code.
+- Output a single JSON object matching the schema. No markdown, no prose outside JSON.
+
+=== USER ===
+CONTEXT (static analysis):
+PROGRAM PAYSETL1 [BATCH, DB2, VSAM] | PARAGRAPH 2000-PROCESS-TXN
+SOURCE: PAYSETL1 line 68-78
+INVOKED BY: PERFORM from 0000-MAINLINE (THRU 2000-EXIT) UNTIL WS-EOF-TXN
+PERFORMS: 2100-VALIDATE-TXN, 2200-APPLY-HOLDS (conditional), 2300-POST-PAYMENT (conditional), 2800-WRITE-REJECT (conditional)
+GO TO: 2000-READ-NEXT
+MODIFIES: WS-TXN-READ-CNT
+FIELD DEFINITIONS:
+  WS-TXN-READ-CNT: 05 in WS-COUNTERS [PAYWS] pos 1 len 5 PIC S9(09) COMP-3 VALUE 0
+  WS-TXN-VALID: 88-level on WS-VALID-SW VALUE 'Y'
+
+SOURCE (6-digit line number, column-7 indicator, columns 8-72):
+000068 2000-PROCESS-TXN.   <PAYSETL1>
+000069     ADD 1 TO WS-TXN-READ-CNT
+000070     PERFORM 2100-VALIDATE-TXN
+000071     IF WS-TXN-VALID
+000072        PERFORM 2200-APPLY-HOLDS
+000073        PERFORM 2300-POST-PAYMENT
+000074     ELSE
+000075        PERFORM 2800-WRITE-REJECT
+000076        GO TO 2000-READ-NEXT
+000077     END-IF
+000078     .
+
+Return JSON with exactly this shape:
+{
+  "purpose": "1-2 sentences, business terms",
+  "business_rules": [
+    {
+      "id": "BR1",
+      "rule": "string",
+      "condition": "string",
+      "action": "string",
+      "source_lines": [
+        123
+      ]
+    }
+  ],
+  "validations": [
+    "string"
+  ],
+  "error_handling": [
+    "string"
+  ],
+  "data_effects": [
+    {
+      "resource": "DB2:TABLE | FILE:NAME | ...",
+      "operation": "C|R|U|D",
+      "description": "string"
+    }
+  ],
+  "migration_notes": [
+    "string"
+  ],
+  "assumptions": [
+    "string"
+  ]
+}

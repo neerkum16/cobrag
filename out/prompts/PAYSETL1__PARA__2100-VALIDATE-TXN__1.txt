@@ -1,0 +1,92 @@
+=== SYSTEM ===
+You are a senior IBM z/OS modernization analyst. You read one COBOL paragraph together with statically derived context (callers, PERFORM targets, SQL, file I/O, CRUD, field definitions with PIC/USAGE/offsets) and extract the business logic it implements.
+
+Rules:
+- Use only the code and context provided. Do not invent field meanings, table semantics or upstream behaviour. If something depends on code not shown, say so in "assumptions".
+- Every business rule must cite the 6-digit source line numbers it comes from.
+- Describe behaviour in business terms first, technical terms second.
+- Flag modernization risks: packed/binary arithmetic and rounding, REDEFINES, GO TO, WITH HOLD cursors, commit scope, file-status or SQLCODE handling gaps, dead code.
+- Output a single JSON object matching the schema. No markdown, no prose outside JSON.
+
+=== USER ===
+CONTEXT (static analysis):
+PROGRAM PAYSETL1 [BATCH, DB2, VSAM] | PARAGRAPH 2100-VALIDATE-TXN
+SOURCE: PAYSETL1 line 83-109
+INVOKED BY: PERFORM from 2000-PROCESS-TXN
+FILE I/O: READ ACCT-MASTER (DD ACCTMST, VSAM KSDS)
+CRUD: ACCT-MASTER (DD ACCTMST, VSAM KSDS)=R
+MODIFIES: WS-VALID-SW, WS-REJ-REASON, ACCT-KEY
+FIELD DEFINITIONS:
+  WS-TXN-VALID: 88-level on WS-VALID-SW VALUE 'Y'
+  WS-REJ-REASON: 05 in WS-WORK-AREAS [PAYWS] pos 38 len 4 PIC X(04)
+  TXN-AMOUNT: 05 in TXN-RECORD [TXNREC] pos 30 len 7 PIC S9(11)V99 COMP-3 record of FD TXN-FILE
+  WS-TXN-INVALID: 88-level on WS-VALID-SW VALUE 'N'
+  TXN-TYPE-DEBIT: 88-level on TXN-TYPE VALUE 'D'
+  TXN-TYPE-CREDIT: 88-level on TXN-TYPE VALUE 'C'
+  TXN-ACCT-NO: 05 in TXN-RECORD [TXNREC] pos 17 len 12 PIC X(12) record of FD TXN-FILE
+  ACCT-KEY: 05 in ACCT-RECORD [ACCTREC] pos 1 len 12 PIC X(12) record of FD ACCT-MASTER
+  ACCT-STAT-CLOSED: 88-level on ACCT-STATUS VALUE 'C'
+
+SOURCE (6-digit line number, column-7 indicator, columns 8-72):
+000083 2100-VALIDATE-TXN.   <PAYSETL1>
+000084     SET WS-TXN-VALID TO TRUE
+000085     MOVE SPACES TO WS-REJ-REASON
+000086     IF TXN-AMOUNT NOT > ZERO
+000087        SET WS-TXN-INVALID TO TRUE
+000088        MOVE 'R001' TO WS-REJ-REASON
+000089     END-IF
+000090     EVALUATE TRUE
+000091        WHEN TXN-TYPE-DEBIT
+000092        WHEN TXN-TYPE-CREDIT
+000093           CONTINUE
+000094        WHEN OTHER
+000095           SET WS-TXN-INVALID TO TRUE
+000096           MOVE 'R002' TO WS-REJ-REASON
+000097     END-EVALUATE
+000098     IF WS-TXN-VALID
+000099        MOVE TXN-ACCT-NO TO ACCT-KEY
+000100        READ ACCT-MASTER
+000101           INVALID KEY
+000102              SET WS-TXN-INVALID TO TRUE
+000103              MOVE 'R003' TO WS-REJ-REASON
+000104        END-READ
+000105     END-IF
+000106     IF WS-TXN-VALID AND ACCT-STAT-CLOSED
+000107        SET WS-TXN-INVALID TO TRUE
+000108        MOVE 'R004' TO WS-REJ-REASON
+000109     END-IF.
+
+Return JSON with exactly this shape:
+{
+  "purpose": "1-2 sentences, business terms",
+  "business_rules": [
+    {
+      "id": "BR1",
+      "rule": "string",
+      "condition": "string",
+      "action": "string",
+      "source_lines": [
+        123
+      ]
+    }
+  ],
+  "validations": [
+    "string"
+  ],
+  "error_handling": [
+    "string"
+  ],
+  "data_effects": [
+    {
+      "resource": "DB2:TABLE | FILE:NAME | ...",
+      "operation": "C|R|U|D",
+      "description": "string"
+    }
+  ],
+  "migration_notes": [
+    "string"
+  ],
+  "assumptions": [
+    "string"
+  ]
+}

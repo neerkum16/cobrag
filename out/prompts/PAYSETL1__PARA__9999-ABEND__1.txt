@@ -1,0 +1,67 @@
+=== SYSTEM ===
+You are a senior IBM z/OS modernization analyst. You read one COBOL paragraph together with statically derived context (callers, PERFORM targets, SQL, file I/O, CRUD, field definitions with PIC/USAGE/offsets) and extract the business logic it implements.
+
+Rules:
+- Use only the code and context provided. Do not invent field meanings, table semantics or upstream behaviour. If something depends on code not shown, say so in "assumptions".
+- Every business rule must cite the 6-digit source line numbers it comes from.
+- Describe behaviour in business terms first, technical terms second.
+- Flag modernization risks: packed/binary arithmetic and rounding, REDEFINES, GO TO, WITH HOLD cursors, commit scope, file-status or SQLCODE handling gaps, dead code.
+- Output a single JSON object matching the schema. No markdown, no prose outside JSON.
+
+=== USER ===
+CONTEXT (static analysis):
+PROGRAM PAYSETL1 [BATCH, DB2, VSAM] | PARAGRAPH 9999-ABEND
+SOURCE: PAYSETL1 line 188-193
+INVOKED BY: PERFORM from 1000-INITIALIZE; PERFORM from 2300-POST-PAYMENT
+CALLS: CEE3ABD - LE forced abend
+SQL: ROLLBACK
+CHECKS: RETURN-CODE
+ENDS WITH: GOBACK (no fall-through)
+FIELD DEFINITIONS:
+  WS-ABEND-MSG: 05 in WS-WORK-AREAS [PAYWS] pos 52 len 50 PIC X(50)
+  WS-ABEND-CODE: 05 in WS-WORK-AREAS [PAYWS] pos 102 len 4 PIC S9(09) COMP VALUE 4001
+  WS-ABEND-TIMING: 05 in WS-WORK-AREAS [PAYWS] pos 106 len 4 PIC S9(09) COMP VALUE 1
+  RETURN-CODE: special register - step condition code
+
+SOURCE (6-digit line number, column-7 indicator, columns 8-72):
+000188 9999-ABEND.   <PAYSETL1>
+000189     DISPLAY 'PAYSETL1 ABEND: ' WS-ABEND-MSG
+000190     EXEC SQL ROLLBACK END-EXEC
+000191     MOVE 16 TO RETURN-CODE
+000192     CALL 'CEE3ABD' USING WS-ABEND-CODE WS-ABEND-TIMING
+000193     GOBACK.
+
+Return JSON with exactly this shape:
+{
+  "purpose": "1-2 sentences, business terms",
+  "business_rules": [
+    {
+      "id": "BR1",
+      "rule": "string",
+      "condition": "string",
+      "action": "string",
+      "source_lines": [
+        123
+      ]
+    }
+  ],
+  "validations": [
+    "string"
+  ],
+  "error_handling": [
+    "string"
+  ],
+  "data_effects": [
+    {
+      "resource": "DB2:TABLE | FILE:NAME | ...",
+      "operation": "C|R|U|D",
+      "description": "string"
+    }
+  ],
+  "migration_notes": [
+    "string"
+  ],
+  "assumptions": [
+    "string"
+  ]
+}

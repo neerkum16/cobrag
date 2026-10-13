@@ -1,0 +1,74 @@
+=== SYSTEM ===
+You are a senior IBM z/OS modernization analyst. You read one COBOL paragraph together with statically derived context (callers, PERFORM targets, SQL, file I/O, CRUD, field definitions with PIC/USAGE/offsets) and extract the business logic it implements.
+
+Rules:
+- Use only the code and context provided. Do not invent field meanings, table semantics or upstream behaviour. If something depends on code not shown, say so in "assumptions".
+- Every business rule must cite the 6-digit source line numbers it comes from.
+- Describe behaviour in business terms first, technical terms second.
+- Flag modernization risks: packed/binary arithmetic and rounding, REDEFINES, GO TO, WITH HOLD cursors, commit scope, file-status or SQLCODE handling gaps, dead code.
+- Output a single JSON object matching the schema. No markdown, no prose outside JSON.
+
+=== USER ===
+CONTEXT (static analysis):
+PROGRAM PAYSETL1 [BATCH, DB2, VSAM] | PARAGRAPH 1000-INITIALIZE
+SOURCE: PAYSETL1 line 55-65
+INVOKED BY: PERFORM from 0000-MAINLINE (THRU 1000-EXIT)
+PERFORMS: 9999-ABEND (conditional), 2900-READ-TXN
+CALLS: DATEUTIL (dynamic via WS-DATE-PGM)
+FILE I/O: OPEN INPUT TXN-FILE (DD TXNIN, QSAM); OPEN I-O ACCT-MASTER (DD ACCTMST, VSAM KSDS); OPEN OUTPUT REJECT-FILE (DD REJOUT, QSAM)
+MODIFIES: WS-ABEND-MSG, WS-RUN-DATE
+FIELD DEFINITIONS:
+  WS-TXN-FS: 05 in WS-FILE-STATUSES [PAYWS] pos 1 len 2 PIC X(02)
+  WS-ABEND-MSG: 05 in WS-WORK-AREAS [PAYWS] pos 52 len 50 PIC X(50)
+  WS-DATE-PGM: 05 in WS-WORK-AREAS [PAYWS] pos 110 len 8 PIC X(08) VALUE 'DATEUTIL'
+  WS-DATE-PARMS: 01 [PAYWS] pos 1 len 16 group
+  WS-DP-CURR-DATE: 05 in WS-DATE-PARMS [PAYWS] pos 5 len 10 PIC X(10)
+  WS-RUN-DATE: 05 in WS-WORK-AREAS [PAYWS] pos 42 len 10 PIC X(10)
+
+SOURCE (6-digit line number, column-7 indicator, columns 8-72):
+000055 1000-INITIALIZE.   <PAYSETL1>
+000056     OPEN INPUT  TXN-FILE
+000057          I-O    ACCT-MASTER
+000058          OUTPUT REJECT-FILE
+000059     IF WS-TXN-FS NOT = '00'
+000060        MOVE 'OPEN TXNIN FAILED' TO WS-ABEND-MSG
+000061        PERFORM 9999-ABEND
+000062     END-IF
+000063     CALL WS-DATE-PGM USING WS-DATE-PARMS
+000064     MOVE WS-DP-CURR-DATE TO WS-RUN-DATE
+000065     PERFORM 2900-READ-TXN.
+
+Return JSON with exactly this shape:
+{
+  "purpose": "1-2 sentences, business terms",
+  "business_rules": [
+    {
+      "id": "BR1",
+      "rule": "string",
+      "condition": "string",
+      "action": "string",
+      "source_lines": [
+        123
+      ]
+    }
+  ],
+  "validations": [
+    "string"
+  ],
+  "error_handling": [
+    "string"
+  ],
+  "data_effects": [
+    {
+      "resource": "DB2:TABLE | FILE:NAME | ...",
+      "operation": "C|R|U|D",
+      "description": "string"
+    }
+  ],
+  "migration_notes": [
+    "string"
+  ],
+  "assumptions": [
+    "string"
+  ]
+}

@@ -1,0 +1,111 @@
+=== SYSTEM ===
+You are a senior IBM z/OS modernization analyst. You read one COBOL paragraph together with statically derived context (callers, PERFORM targets, SQL, file I/O, CRUD, field definitions with PIC/USAGE/offsets) and extract the business logic it implements.
+
+Rules:
+- Use only the code and context provided. Do not invent field meanings, table semantics or upstream behaviour. If something depends on code not shown, say so in "assumptions".
+- Every business rule must cite the 6-digit source line numbers it comes from.
+- Describe behaviour in business terms first, technical terms second.
+- Flag modernization risks: packed/binary arithmetic and rounding, REDEFINES, GO TO, WITH HOLD cursors, commit scope, file-status or SQLCODE handling gaps, dead code.
+- Output a single JSON object matching the schema. No markdown, no prose outside JSON.
+
+=== USER ===
+CONTEXT (static analysis):
+PROGRAM PAYSETL1 [BATCH, DB2, VSAM] | PARAGRAPH 2300-POST-PAYMENT
+SOURCE: PAYSETL1 line 124-158
+INVOKED BY: PERFORM from 2000-PROCESS-TXN
+PERFORMS: 9999-ABEND (conditional)
+SQL: INSERT PAYMENT_HIST; UPDATE ACCOUNT_BAL
+FILE I/O: REWRITE ACCT-MASTER (DD ACCTMST, VSAM KSDS)
+CRUD: DB2:ACCOUNT_BAL=U DB2:PAYMENT_HIST=C ACCT-MASTER (DD ACCTMST, VSAM KSDS)=U
+MODIFIES: WS-NET-AMT, PH-TXN-ID, PH-ACCT-NO, PH-AMOUNT, PH-POST-DATE, WS-ABEND-MSG, ACCT-LEDGER-BAL, ACCT-TXN-CNT, WS-TXN-POSTED-CNT
+CHECKS: SQLCODE
+FIELD DEFINITIONS:
+  WS-NET-AMT: 05 in WS-WORK-AREAS [PAYWS] pos 31 len 7 PIC S9(11)V99 COMP-3
+  TXN-AMOUNT: 05 in TXN-RECORD [TXNREC] pos 30 len 7 PIC S9(11)V99 COMP-3 record of FD TXN-FILE
+  WS-HOLD-TOTAL: 05 in WS-WORK-AREAS [PAYWS] pos 24 len 7 PIC S9(11)V99 COMP-3
+  TXN-ID: 05 in TXN-RECORD [TXNREC] pos 1 len 16 PIC X(16) record of FD TXN-FILE
+  PH-TXN-ID: 05 in PH-HOST-VARS [PAYWS] pos 1 len 16 PIC X(16)
+  TXN-ACCT-NO: 05 in TXN-RECORD [TXNREC] pos 17 len 12 PIC X(12) record of FD TXN-FILE
+  PH-ACCT-NO: 05 in PH-HOST-VARS [PAYWS] pos 17 len 12 PIC X(12)
+  PH-AMOUNT: 05 in PH-HOST-VARS [PAYWS] pos 29 len 7 PIC S9(11)V99 COMP-3
+  WS-RUN-DATE: 05 in WS-WORK-AREAS [PAYWS] pos 42 len 10 PIC X(10)
+  PH-POST-DATE: 05 in PH-HOST-VARS [PAYWS] pos 36 len 10 PIC X(10)
+  WS-ABEND-MSG: 05 in WS-WORK-AREAS [PAYWS] pos 52 len 50 PIC X(50)
+  TXN-TYPE-DEBIT: 88-level on TXN-TYPE VALUE 'D'
+  ACCT-LEDGER-BAL: 05 in ACCT-RECORD [ACCTREC] pos 14 len 8 PIC S9(13)V99 COMP-3 record of FD ACCT-MASTER
+  ACCT-TXN-CNT: 05 in ACCT-RECORD [ACCTREC] pos 30 len 4 PIC S9(09) COMP record of FD ACCT-MASTER
+  ACCT-RECORD: 01 [ACCTREC] pos 1 len 87 group record of FD ACCT-MASTER
+  WS-TXN-POSTED-CNT: 05 in WS-COUNTERS [PAYWS] pos 6 len 5 PIC S9(09) COMP-3 VALUE 0
+  SQLCODE: SQLCA - DB2 return code
+
+SOURCE (6-digit line number, column-7 indicator, columns 8-72):
+000124 2300-POST-PAYMENT.   <PAYSETL1>
+000125     COMPUTE WS-NET-AMT ROUNDED =
+000126             TXN-AMOUNT - WS-HOLD-TOTAL
+000127     MOVE TXN-ID        TO PH-TXN-ID
+000128     MOVE TXN-ACCT-NO   TO PH-ACCT-NO
+000129     MOVE WS-NET-AMT    TO PH-AMOUNT
+000130     MOVE WS-RUN-DATE   TO PH-POST-DATE
+000131     EXEC SQL
+000132        INSERT INTO PAYMENT_HIST
+000133               (TXN_ID, ACCT_NO, AMOUNT, POST_DATE)
+000134        VALUES (:PH-TXN-ID, :PH-ACCT-NO, :PH-AMOUNT,
+000135                :PH-POST-DATE)
+000136     END-EXEC
+000137     IF SQLCODE NOT = 0
+000138        MOVE 'INSERT PAYMENT_HIST FAILED' TO WS-ABEND-MSG
+000139        PERFORM 9999-ABEND
+000140     END-IF
+000141     EXEC SQL
+000142        UPDATE ACCOUNT_BAL
+000143           SET CURR_BAL     = CURR_BAL + :WS-NET-AMT,
+000144               LAST_POST_DT = :WS-RUN-DATE
+000145         WHERE ACCT_NO = :PH-ACCT-NO
+000146     END-EXEC
+000147     IF TXN-TYPE-DEBIT
+000148        SUBTRACT WS-NET-AMT FROM ACCT-LEDGER-BAL
+000149     ELSE
+000150        ADD WS-NET-AMT TO ACCT-LEDGER-BAL
+000151     END-IF
+000152     ADD 1 TO ACCT-TXN-CNT
+000153     REWRITE ACCT-RECORD
+000154        INVALID KEY
+000155           MOVE 'REWRITE ACCTMST FAILED' TO WS-ABEND-MSG
+000156           PERFORM 9999-ABEND
+000157     END-REWRITE
+000158     ADD 1 TO WS-TXN-POSTED-CNT.
+
+Return JSON with exactly this shape:
+{
+  "purpose": "1-2 sentences, business terms",
+  "business_rules": [
+    {
+      "id": "BR1",
+      "rule": "string",
+      "condition": "string",
+      "action": "string",
+      "source_lines": [
+        123
+      ]
+    }
+  ],
+  "validations": [
+    "string"
+  ],
+  "error_handling": [
+    "string"
+  ],
+  "data_effects": [
+    {
+      "resource": "DB2:TABLE | FILE:NAME | ...",
+      "operation": "C|R|U|D",
+      "description": "string"
+    }
+  ],
+  "migration_notes": [
+    "string"
+  ],
+  "assumptions": [
+    "string"
+  ]
+}

@@ -29,13 +29,23 @@ Known limits
 """
 from __future__ import annotations
 
+# argparse reads the two CLI subcommands and their options.
 import argparse
+# json serializes the analysis chunks and reads them back for search.
 import json
+# math supplies logarithms for BM25 and rounds up token estimates.
 import math
+# re recognizes COBOL syntax and masks quoted text during analysis.
 import re
+# sys supplies the existing CLI exit path when no source files are found.
 import sys
+# defaultdict collects repeated names and resource actions without a separate
+# missing-key check at every insertion.
 from collections import defaultdict
+# These classes hold parsed source and analysis data; field creates fresh mutable
+# lists and dictionaries for each instance.
 from dataclasses import dataclass, field
+# Path handles input source paths, copybook lookup, and output artifact paths.
 from pathlib import Path
 
 CRUD_ORDER = 'CRUD'
@@ -50,6 +60,8 @@ LIT_TOKEN = re.compile(r'<L(\d+)>')
 def mask_literals(text):
     """Replace each literal with <Ln>. Handles doubled quotes and X'..'/N'..' prefixes."""
     out, lits, i, n = [], [], 0, len(text)
+    # Scan one character at a time so a quoted period or keyword cannot be
+    # mistaken for COBOL syntax by later regular expressions.
     while i < n:
         c = text[i]
         if c in "'\"":
@@ -57,6 +69,8 @@ def mask_literals(text):
             if out and out[-1] in 'XxNnGgZz' and (len(out) < 2 or not (out[-2].isalnum() or out[-2] == '-')):
                 prefix = out.pop()
             j = i + 1
+            # Two adjacent quote characters represent one quote inside a
+            # literal, so only a non-doubled quote closes it.
             while j < n:
                 if text[j] == c:
                     if j + 1 < n and text[j + 1] == c:
@@ -74,6 +88,8 @@ def mask_literals(text):
 
 
 def unmask(text, lits):
+    # Each placeholder's number points back to the literal saved by
+    # mask_literals. This restores the original spelling and letter case.
     return LIT_TOKEN.sub(lambda m: lits[int(m.group(1))], text)
 
 
@@ -122,9 +138,13 @@ class SrcLine:
 
 def read_fixed(path, member):
     out = []
+    # Read one COBOL member from disk. Replacement characters keep undecodable
+    # input from stopping the analysis, as in the original reader.
     raw_lines = Path(path).read_text(encoding='utf-8', errors='replace').splitlines()
     for no, raw in enumerate(raw_lines, 1):
         raw = raw.expandtabs(8)
+        # Columns 1-6 hold sequence numbers, column 7 is the indicator, and
+        # columns 8-72 contain the code or comment retained here.
         if len(raw) < 8 or not raw[7:72].strip():
             continue
         ind = raw[6]
@@ -135,6 +155,8 @@ def read_fixed(path, member):
             continue
         code = raw[7:72]
         lead = len(code) - len(code.lstrip())
+        # Search backward for the last code line. A continuation may follow
+        # comments, but it still extends that preceding code line.
         prev = next((x for x in reversed(out) if not x.comment), None)
         if ind == '-' and prev is not None:     # continuation line
             padded = prev.text[:prev.seg] + prev.text[prev.seg:].ljust(prev.segw)
@@ -163,9 +185,13 @@ class CopyResolver:
     EXTS = ['', '.cpy', '.CPY', '.cbl', '.CBL', '.cob', '.COB', '.copy', '.txt']
 
     def __init__(self, dirs):
+        # Only existing directories are searched for COPY and SQL INCLUDE
+        # members. Keep their CLI order because the first match wins.
         self.dirs = [Path(d) for d in dirs if Path(d).is_dir()]
 
     def find(self, member):
+        # Try conventional suffixes first, then a case-insensitive stem match
+        # within each directory. The returned Path is read by expand_copies.
         for d in self.dirs:
             for e in self.EXTS:
                 p = d / f'{member}{e}'
@@ -183,6 +209,8 @@ REPL_PAIR = re.compile(REPL_OPERAND + r'\s+BY\s+' + REPL_OPERAND, re.S | re.I)
 
 
 def statement_end(lines, i):
+    # A COPY statement may span physical lines. Ignore comment lines and
+    # periods inside literals while looking for its terminating period.
     for j in range(i, len(lines)):
         if lines[j].comment:
             continue
@@ -206,6 +234,8 @@ def parse_copy_stmt(stmt):
 
 
 def apply_replacing(lines, pairs):
+    # Compile each COPY REPLACING pair once, then apply the pairs in their
+    # original order to every expanded copybook line.
     compiled = []
     for a, b in pairs:
         a_s = a[2:-2].strip() if a.startswith('==') else a
@@ -225,6 +255,8 @@ def apply_replacing(lines, pairs):
 
 def expand_copies(lines, resolver, ctx, depth=0):
     out, i = [], 0
+    # Walk source lines in order. Resolved COPY members are read from disk and
+    # inserted at the COPY site; ctx records both resolved and missing members.
     while i < len(lines):
         ln = lines[i]
         if ln.comment:
@@ -237,6 +269,8 @@ def expand_copies(lines, resolver, ctx, depth=0):
             stmt = ' '.join(x.text.strip() for x in lines[i:j + 1] if not x.comment)
             member, pairs = parse_copy_stmt(stmt)
             path = resolver.find(member) if depth < 10 else None
+            # The depth limit also causes an unresolved entry in the report;
+            # it prevents recursive COPY chains from expanding forever.
             ctx.append({'member': member, 'resolved': bool(path), 'from': ln.member,
                         'line': ln.lineno, 'replacing': [f'{a} BY {b}' for a, b in pairs],
                         'kind': 'COPY'})
@@ -287,6 +321,8 @@ def render(ln):
 def sentences(lines):
     """Split lines into COBOL sentences/entries. Returns (text, first_idx, last_idx)."""
     res, buf, first = [], [], None
+    # A single physical line can contain several period-ended sentences, and
+    # one sentence can span several lines. Keep source indices for both cases.
     for idx, ln in enumerate(lines):
         if ln.comment:
             continue
@@ -386,12 +422,19 @@ def pic_attrs(pic, usage, sign_sep):
     """Return (category, storage_bytes, digits, scale, signed) per Enterprise COBOL rules."""
     e = expand_pic(pic)
     s = set(e)
+    # PIC describes logical characters; USAGE determines their stored byte
+    # count. The five return values feed DataItem layout calculations.
     if s <= set('9SVP'):
         digits = e.count('9')
         scale = e.split('V', 1)[1].count('9') if 'V' in e else 0
         signed = 'S' in e
         if usage in ('COMP', 'COMP-5'):
-            size = 2 if digits <= 4 else 4 if digits <= 9 else 8
+            if digits <= 4:
+                size = 2
+            elif digits <= 9:
+                size = 4
+            else:
+                size = 8
         elif usage == 'COMP-3':
             size = digits // 2 + 1
         elif usage == 'NATIONAL':
@@ -417,6 +460,8 @@ def pic_attrs(pic, usage, sign_sep):
 
 
 def parse_data_entry(text, section, fd, member, lineno):
+    # Mask values before splitting the entry into words. Literal contents can
+    # then be restored for VALUE while clause keywords stay easy to compare.
     masked, lits = mask_literals(upper_code(text))
     tok = masked.split()
     if not tok or not tok[0].isdigit():
@@ -433,9 +478,13 @@ def parse_data_entry(text, section, fd, member, lineno):
 
     def skip(*words):
         nonlocal j
+        # The caller has already recognized a clause. Move past optional
+        # connector words such as IS, ON, or BY without changing clause order.
         while j < n and tok[j] in words:
             j += 1
 
+    # Each branch consumes one clause or one unrecognized word. Advancing j
+    # here is essential because COBOL clauses can appear in varying orders.
     while j < n:
         t = tok[j]
         if t == 'REDEFINES' and j + 1 < n:
@@ -519,6 +568,7 @@ def parse_data_entry(text, section, fd, member, lineno):
 
 def compute_layout(rec):
     def inherit(it, inh):
+        # A child without its own USAGE inherits the current group setting.
         if not it.usage_explicit and inh:
             it.usage = inh
         nxt = it.usage if it.usage_explicit else inh
@@ -526,11 +576,15 @@ def compute_layout(rec):
             inherit(ch, nxt)
 
     def size(it, base):
+        # Offsets are zero-based internally. Artifact builders add one when
+        # showing the 1-based positions used by DFSORT/ICETOOL.
         it.offset = base
         if it.children:
             cursor = end = base
             seen = {}
             for ch in it.children:
+                # REDEFINES overlays an earlier sibling instead of consuming
+                # the next bytes. end still tracks the widest overlay.
                 start = seen[ch.redefines].offset if ch.redefines in seen else cursor
                 size(ch, start)
                 ext = start + ch.total
@@ -623,6 +677,8 @@ class Para:
 
 class Program:
     def __init__(self, path):
+        # This object gathers all facts about one source member. Parsing fills
+        # these collections before later passes build chunks and reports.
         self.path = Path(path)
         self.member = self.path.stem.upper()
         self.id = self.member
@@ -687,6 +743,8 @@ class Program:
 # =============================================================================
 def parse_program(path, resolver):
     prog = Program(path)
+    # Source and any resolved copybooks become one ordered stream of SrcLine
+    # objects. Individual parsers receive slices of that same stream.
     raw = read_fixed(path, prog.member)
     prog.lines = expand_copies(raw, resolver, prog.copybooks)
     lines = prog.lines
@@ -702,6 +760,8 @@ def parse_program(path, resolver):
             div.setdefault(key, i)
     n = len(lines)
     order = sorted(div.items(), key=lambda kv: kv[1])
+    # A division runs from its header up to the next division header, or the
+    # end of the expanded source for the final division.
     bounds = {k: (v, order[x + 1][1] if x + 1 < len(order) else n) for x, (k, v) in enumerate(order)}
 
     first_code = bounds.get('DATA', bounds.get('PROCEDURE', (n, n)))[0]
@@ -724,6 +784,8 @@ def parse_program(path, resolver):
 
 
 def parse_environment(prog, lines):
+    # SELECT entries describe COBOL files; no file is opened here. The parsed
+    # assignment and organization later label file resources in the artifacts.
     for text, _, _ in sentences(lines):
         masked, lits = mask_literals(upper_code(text))
         tok = masked.split()
@@ -789,6 +851,8 @@ def parse_environment(prog, lines):
             k += 1
         assign = (sel['assign'] or name).upper()
         parts = assign.split('-')
+        # The final assignment component becomes the DD name. Organization
+        # determines the file type shown in reports and chunks.
         sel['dd'] = parts[-1]
         if sel['org'] == 'INDEXED':
             sel['vsam'] = 'VSAM KSDS'
@@ -804,6 +868,8 @@ def parse_environment(prog, lines):
 def parse_data(prog, lines):
     section, fd = None, None
     stack, last, rec = [], None, None
+    # Level numbers describe parent-child record structure. The stack holds
+    # open parents, and special 88/66 levels are handled separately below.
     for text, i0, _ in sentences(lines):
         ln = lines[i0]
         up = upper_code(text).strip()
@@ -862,6 +928,7 @@ def parse_data(prog, lines):
         for ix in it.indexes:
             prog.index_names[ix] = it
     for r in prog.records:
+        # Layout calculation runs after all children have been attached.
         compute_layout(r)
 
 
@@ -872,6 +939,8 @@ NOT_PARA = {'EXIT', 'GOBACK', 'CONTINUE', 'ELSE', 'END-IF', 'END-PERFORM', 'END-
 
 
 def parse_procedure(prog, lines):
+    # The first sentence is the PROCEDURE DIVISION header; its USING names
+    # describe the program's parameters in the summary chunk.
     sents = sentences(lines)
     hdr_end = sents[0][2] if sents else 0
     hdr = upper_code(sents[0][0]) if sents else ''
@@ -881,6 +950,8 @@ def parse_procedure(prog, lines):
                       if t not in ('BY', 'REFERENCE', 'VALUE', 'CONTENT')]
     body = lines[hdr_end + 1:]
     cur, section, pending = None, None, []
+    # Comments immediately before a new section or paragraph stay with that
+    # paragraph. Body lines are also kept for source snippets in chunks.
     for ln in body:
         if ln.comment:
             pending.append(ln)
@@ -926,6 +997,8 @@ def parse_procedure(prog, lines):
 # =============================================================================
 def names_after(st, start, stops, is_data):
     out, depth = [], 0
+    # Walk statement tokens until a stopping keyword. Parenthesized tokens
+    # are skipped so subscript names are not counted as destination fields.
     for t in st[start:]:
         if t == '(':
             depth += 1
@@ -950,6 +1023,8 @@ def first_index(st, *words):
 
 
 def analyze_sql(masked_body, lits):
+    # This reads embedded SQL text from a COBOL source; it does not connect to
+    # DB2. The result records the operation, table access, and host variables.
     b = ' '.join(masked_body.split())
     info = {'op': None, 'tables': {}, 'cursor': None, 'host_vars': [], 'into_vars': [],
             'with_hold': False, 'text': unmask(b, lits)}
@@ -963,6 +1038,8 @@ def analyze_sql(masked_body, lits):
             info['tables'].setdefault(t, set()).add(c)
 
     def from_tables(s):
+        # FROM and JOIN clauses can name several read tables. Ignore tokens
+        # that represent joins, derived tables, or host variables.
         for m in FROM_RE.finditer(s):
             for part in re.split(r',|\bJOIN\b', m.group(1)):
                 part = part.strip()
@@ -975,6 +1052,8 @@ def analyze_sql(masked_body, lits):
                 add(w, 'R')
 
     def hv(s):
+        # A colon introduces a COBOL host variable in embedded SQL. Qualified
+        # names are split so their components can match parsed data items.
         out = []
         for h in re.findall(r':\s*([A-Z0-9][A-Z0-9-]*(?:\.[A-Z0-9][A-Z0-9-]*)*)', s):
             out.extend(h.split('.'))
@@ -1052,6 +1131,8 @@ def cics_opts(text):
 
 
 def analyze_cics(prog, masked_body, lits):
+    # Interpret an EXEC CICS block as source text. Options such as FILE and
+    # PROGRAM become resource and call metadata; no CICS command runs here.
     b = ' '.join(masked_body.split())
     words = b.split()
     info = {'command': '', 'resource': None, 'crud': None, 'program': None,
@@ -1067,6 +1148,8 @@ def analyze_cics(prog, masked_body, lits):
     base = cmd.split()[0]
 
     def resolve(arg):
+        # An option may contain a literal or a data name. A known VALUE clause
+        # supplies a readable label, while an unknown value keeps its name.
         a = unmask(arg, lits).strip()
         if a[:1] in "'\"":
             return strip_quotes(a)
@@ -1092,6 +1175,8 @@ def analyze_cics(prog, masked_body, lits):
 
 
 def analyze_dli(masked_body, lits):
+    # Extract DL/I function, segment, and PCB names from source text for
+    # later chunk metadata. This does not access an IMS database.
     b = ' '.join(masked_body.split())
     func = b.split()[0] if b else ''
     for long, short in DLI_LONG.items():
@@ -1120,6 +1205,8 @@ def analyze_para(prog, p):
     execs = []
 
     def take_exec(m):
+        # Save an embedded SQL/CICS/DLI block for its own analysis, then put a
+        # marker in the COBOL token stream so its words are not parsed twice.
         execs.append((m.group(1), m.group(2)))
         if m.group(1) == 'CICS' and re.match(r'\s*(RETURN|XCTL|ABEND)\b', m.group(2)):
             return ' EXEC-CICS-RETURN '
@@ -1130,6 +1217,8 @@ def analyze_para(prog, p):
     toks = TOKEN_RE.findall(cobol)
 
     refs, writes, specials = [], [], []
+    # Ordinary COBOL tokens identify referenced fields and special registers.
+    # Write destinations are collected by statement-specific rules below.
     for t in toks:
         if prog.is_data(t):
             refs.append(t)
@@ -1165,6 +1254,8 @@ def analyze_para(prog, p):
 
     # ---- statements ----------------------------------------------------------
     stmts, cur = [], []
+    # Split tokens at sentence ends and recognized verbs. Later rules inspect
+    # one statement at a time in the same order as the source.
     for t in toks:
         if t == '<EOS>':
             if cur:
@@ -1188,6 +1279,7 @@ def analyze_para(prog, p):
     for st in stmts:
         v = st[0]
         if v == '<EOS>':
+            # A period closes active nested scopes for the following sentence.
             nest.clear()
             continue
         depth = len(nest)
@@ -1204,6 +1296,8 @@ def analyze_para(prog, p):
             elif v == 'EXEC-CICS-RETURN':
                 p.terminal = 'EXEC CICS RETURN/XCTL'
         # nesting
+        # Track surrounding IF/PERFORM and other scopes so a conditional
+        # branch is not treated like an unconditional paragraph exit.
         if v in ('IF', 'EVALUATE', 'SEARCH'):
             nest.append(v)
         elif v == 'PERFORM' and (len(st) == 1 or not prog.is_proc(st[1])):
@@ -1225,6 +1319,8 @@ def analyze_para(prog, p):
                 nest.append('PHRASE')
 
         # control flow
+        # PERFORM and GO TO targets become edges in the later reachability
+        # pass. A missing target is kept as an unresolved reference.
         if v == 'PERFORM' and len(st) > 1:
             if prog.is_proc(st[1]):
                 thru = st[3] if len(st) > 3 and st[2] in ('THRU', 'THROUGH') else None
@@ -1273,6 +1369,8 @@ def analyze_para(prog, p):
                         p.crud[prog.file_res(f)].add('C')
 
         # CALL
+        # Literal CALL targets are fixed names; identifier targets may be
+        # resolved from VALUE clauses in finalize().
         if v == 'CALL' and len(st) > 1:
             tgt = st[1]
             ui = first_index(st, 'USING')
@@ -1298,6 +1396,8 @@ def analyze_para(prog, p):
             p.calls.append(call)
 
         # data modification
+        # Track destinations separately from all references. The resulting
+        # list helps describe side effects and dynamic CALL stability.
         if v == 'MOVE':
             i = first_index(st, 'TO')
             if i > 0:
@@ -1343,6 +1443,8 @@ def analyze_para(prog, p):
                 writes += names_after(st, ti + 1, {'FOR'}, isd)[:1]
 
         # file I/O
+        # These are COBOL file operations found in source text, not Python
+        # file reads or writes. Record names map back to their SELECT file.
         if v == 'OPEN':
             mode = None
             for t in st[1:]:
@@ -1376,12 +1478,16 @@ def analyze_para(prog, p):
 # 8. Whole-program post-processing: cursors, dynamic calls, reachability
 # =============================================================================
 def finalize(prog):
+    # An OPEN or FETCH of a declared SQL cursor reads the cursor's tables.
+    # Cursor declarations may have appeared earlier in either division.
     for p in prog.paras:
         for s in p.sql:
             if s['op'] in ('OPEN', 'FETCH') and s['cursor'] in prog.cursors:
                 for t in prog.cursors[s['cursor']]['tables']:
                     p.crud[f'DB2:{t}'].add('R')
     all_writes = {w for p in prog.paras for w in p.writes}
+    # A CALL through a data name can be labelled with its VALUE. If that name
+    # is written anywhere in the program, the runtime target may differ.
     for p in prog.paras:
         for c in p.calls:
             if c.get('dynamic') and c.get('var'):
@@ -1391,6 +1497,7 @@ def finalize(prog):
                 if v:
                     c['name'] = v
     reachability(prog)
+    # Build the reverse control-flow descriptions used by paragraph headers.
     for p in prog.paras:
         for pf in p.performs:
             s, e = pf['range']
@@ -1425,6 +1532,8 @@ def reachability(prog):
     if not n:
         return
     seen, stack = set(), [(0, None)]
+    # Each stack entry contains a paragraph index and the end of an active
+    # PERFORM range. A seen state is skipped to avoid revisiting cycles.
     while stack:
         i, end = stack.pop()
         if i >= n or (i, end) in seen:
@@ -1439,6 +1548,8 @@ def reachability(prog):
             stack.append((j, end if end is not None and j <= end else None))
         if p.terminal:
             continue
+        # With no terminal statement, execution can reach the next paragraph.
+        # Retain the active PERFORM end until its range has been traversed.
         if end is None and i + 1 < n:
             prog.fallthrough.add((i, i + 1))
             stack.append((i + 1, None))
@@ -1455,6 +1566,8 @@ def crud_str(c):
 
 
 def describe(prog, name):
+    # Turn one referenced name into a short field definition. Duplicate data
+    # names use the first matching item and are marked as needing qualification.
     if name in prog.conds:
         c = prog.conds[name]
         return f'{name}: 88-level on {c.parent.name} VALUE {c.value}'
@@ -1503,6 +1616,8 @@ def describe(prog, name):
 
 
 def para_header(prog, p, part=None):
+    # The readable header supplies context that bare COBOL source lacks:
+    # callers, resources, changed fields, and definitions for referenced data.
     h = [f"PROGRAM {prog.id} [{', '.join(prog.tags)}] | {p.kind.upper()} {p.name}"
          + (f' | SECTION {p.section}' if p.section and p.kind != 'section' else '')
          + (f' | PART {part[0]}/{part[1]}' if part and part[1] > 1 else '')]
@@ -1569,6 +1684,8 @@ def para_header(prog, p, part=None):
 
 
 def split_lines(lines, budget, overlap):
+    # The budget is a character estimate of chunk size. Prefer starting a
+    # new part at a COBOL verb; repeat the requested trailing lines for context.
     texts = [l.text for l in lines]
     if sum(len(t) + 1 for t in texts) <= budget:
         return [lines]
@@ -1588,11 +1705,19 @@ def split_lines(lines, budget, overlap):
 
 
 def numbered(lines):
-    return '\n'.join(f'{l.lineno:06d}{render(l)}' + (f'   <{l.member}>' if i == 0 or l.member != lines[i - 1].member else '')
-                     for i, l in enumerate(lines))
+    numbered_lines = []
+    for index, line in enumerate(lines):
+        text = f'{line.lineno:06d}{render(line)}'
+        # Show the member when the snippet starts or switches copybooks.
+        if index == 0 or line.member != lines[index - 1].member:
+            text += f'   <{line.member}>'
+        numbered_lines.append(text)
+    return '\n'.join(numbered_lines)
 
 
 def est_tokens(s):
+    # The program uses one token per four characters as a simple estimate;
+    # it does not call a tokenizer or an embedding model.
     return math.ceil(len(s) / 4)
 
 
@@ -1642,6 +1767,8 @@ def layout_text(rec):
 def build_chunks(progs, max_tokens, overlap):
     chunks = []
     shared = {}                              # copybook-scoped record layouts (dedup)
+    # Each paragraph becomes one or more JSON-ready chunks. Headers and code
+    # are kept together in embed_text for later offline retrieval or RAG use.
     for prog in progs:
         for p in prog.paras:
             hdr0 = para_header(prog, p)
@@ -1687,6 +1814,8 @@ def build_chunks(progs, max_tokens, overlap):
                     fds.append(f"{prog.id} FD {fd}" + (f" DD {sel['dd']} {sel['vsam']}"
                                + (f" KEY {sel['record_key']}" if sel['record_key'] else '') if sel else ''))
             if kind == 'COPY':
+                # The same copybook name and record names/lengths across
+                # programs produce one group listing every program that uses it.
                 sig = (name, tuple((r.name, r.length) for r in recs))
                 if sig in shared:
                     shared[sig]['used_by'].append(prog.id)
@@ -1714,6 +1843,8 @@ def record_block(rec):
 
 
 def layout_chunks(cid, hdr, recs, program, member, meta, max_tokens):
+    # Group complete record layouts within the same estimated size budget;
+    # the returned dictionaries have the same shape as other chunk records.
     budget = max(1200, max_tokens * 4 - len(hdr))
     parts, cur, size = [], [], 0
     for rec in recs:
@@ -1740,6 +1871,8 @@ def layout_chunks(cid, hdr, recs, program, member, meta, max_tokens):
 
 def call_tree(prog, max_depth=10):
     out, expanded = [], set()
+    # Walk PERFORM ranges from the entry paragraph. Remember expanded ranges
+    # so repeated or recursive calls remain readable in the summary.
 
     def tags(i, e):
         t, seen = [], set()
@@ -1781,6 +1914,8 @@ def call_tree(prog, max_depth=10):
 
 
 def program_summary_chunk(prog):
+    # Aggregate resource actions and calls from every paragraph into one
+    # program-level chunk, retaining each resource's CRUD letters.
     tables = defaultdict(set)
     files = defaultdict(set)
     calls = {}
@@ -1833,6 +1968,8 @@ def mid(prefix, name):
 
 
 def flow_mmd(prog):
+    # Mermaid text visualizes paragraph control flow. These lines are later
+    # written to a .flow.mmd file; no renderer is called by this program.
     out = ['flowchart TD']
     _append = out.append
 
@@ -1872,6 +2009,8 @@ def flow_mmd(prog):
 
 
 def resources_mmd(prog):
+    # Build one node per external resource and connect paragraphs to the
+    # resources their parsed COBOL statements mention.
     out = ['flowchart LR', f'  subgraph {mid("G_", prog.id)}["{prog.id}"]']
     used = [p for p in prog.paras if p.crud]
     for p in used:
@@ -1884,16 +2023,22 @@ def resources_mmd(prog):
             rid = mid('R_', r)
             if rid not in nodes:
                 label = prog.resource_label(r) if kind == 'FILE' else name
-                nodes[rid] = (f'{rid}[("DB2 {label}")]' if kind == 'DB2' else
-                              f'{rid}[/"{label}"/]' if kind == 'FILE' else
-                              f'{rid}[/"CICS FILE {label}"/]' if kind == 'CICS-FILE' else
-                              f'{rid}{{{{"{kind} {label}"}}}}')
+                if kind == 'DB2':
+                    nodes[rid] = f'{rid}[("DB2 {label}")]'
+                elif kind == 'FILE':
+                    nodes[rid] = f'{rid}[/"{label}"/]'
+                elif kind == 'CICS-FILE':
+                    nodes[rid] = f'{rid}[/"CICS FILE {label}"/]'
+                else:
+                    nodes[rid] = f'{rid}{{{{"{kind} {label}"}}}}'
             out.append(f'  {mid("P_", p.name)} -->|{crud_str(c)}| {rid}')
     out[3 + len(used):3 + len(used)] = [f'  {v}' for v in nodes.values()]
     return '\n'.join(out) + '\n'
 
 
 def layout_md(prog):
+    # Present calculated byte positions and lengths as Markdown tables.
+    # Displayed positions add one to each internal zero-based offset.
     out = [f'# Record layouts - {prog.id}', '',
            'POS is 1-based (DFSORT/ICETOOL convention). LEN is per occurrence for OCCURS items.', '']
     for rec in prog.records:
@@ -1962,6 +2107,8 @@ def sym_constant(cond, parent):
 
 
 def symnames(prog, occurs_cap=20):
+    # Convert eligible layouts into DFSORT symbol definitions. Repeated items
+    # are expanded only to occurs_cap, and unsupported values remain comments.
     out = [f'* DFSORT SYMNAMES generated by cobrag from {prog.id}',
            '* Positions are 1-based. OCCURS elements are expanded as NAME_n.']
     seen = set()
@@ -2006,6 +2153,8 @@ def symnames(prog, occurs_cap=20):
 
 
 def crud_md(progs):
+    # Render paragraph-level resource access, then combine each resource's
+    # CRUD letters into the program-level matrix.
     out = ['# CRUD matrices', '', 'C=create (INSERT/WRITE/ISRT) R=read (SELECT/FETCH/READ/GU/GN) '
            'U=update (UPDATE/REWRITE/REPL) D=delete (DELETE/DLET)', '']
     prog_level = defaultdict(dict)
@@ -2038,6 +2187,8 @@ def crud_md(progs):
 
 
 def report_md(progs, chunks):
+    # Summarize inventory, cross-references, migration flags, and chunk counts
+    # from the already parsed programs. This function only builds text.
     out = ['# cobrag analysis report', '']
     out.append('## Inventory')
     out.append('')
@@ -2141,6 +2292,8 @@ def stem(w):
 def ir_tokens(text):
     """Lowercase, keep hyphenated COBOL names whole AND split, light suffix stemming."""
     out = []
+    # A compound COBOL name is indexed both whole and by its components so
+    # either form of a query can find it.
     for w in re.findall(r'[a-z0-9][a-z0-9_-]*', text.lower()):
         out.append(w)
         if '-' in w or '_' in w:
@@ -2151,17 +2304,22 @@ def ir_tokens(text):
 
 
 def bm25_search(chunks, query, k=5, kinds=None, k1=1.2, b=0.75):
+    # Search the local chunk dictionaries only. Document frequencies and term
+    # frequencies feed the BM25 score; positive scores are returned in order.
     if kinds:
         chunks = [c for c in chunks if c['kind'] in kinds]
     docs = [ir_tokens(c['embed_text']) for c in chunks]
     N = len(docs)
     avg = sum(map(len, docs)) / max(1, N)
     df = defaultdict(int)
+    # Count a term once per document for inverse document frequency.
     for d in docs:
         for t in set(d):
             df[t] += 1
     q = ir_tokens(query)
     scores = []
+    # Count every occurrence in each document for term frequency, then add
+    # one score contribution for each query token present in that document.
     for c, d in zip(chunks, docs):
         tf = defaultdict(int)
         for t in d:
@@ -2185,6 +2343,8 @@ SRC_EXTS = {'.cbl', '.cob', '.cobol', '.CBL', '.COB'}
 
 def collect_sources(paths):
     out = []
+    # Directory arguments contribute only recognized COBOL suffixes. A file
+    # argument is accepted directly, and source order follows CLI order.
     for p in map(Path, paths):
         if p.is_dir():
             out.extend(sorted(x for x in p.iterdir() if x.suffix in SRC_EXTS))
@@ -2194,6 +2354,8 @@ def collect_sources(paths):
 
 
 def cmd_analyze(a):
+    # Set up copybook search and create the output directory before reading
+    # and analyzing each collected source in order.
     resolver = CopyResolver(a.copy)
     outdir = Path(a.out)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -2201,6 +2363,8 @@ def cmd_analyze(a):
     if not progs:
         sys.exit('no COBOL sources found')
     chunks = build_chunks(progs, a.max_tokens, a.overlap)
+    # JSON Lines contains one chunk per line. Sets are serialized in sorted
+    # order; the other artifacts are written as plain text below.
     with open(outdir / 'chunks.jsonl', 'w', encoding='utf-8') as fh:
         for c in chunks:
             fh.write(json.dumps(c, default=lambda o: sorted(o) if isinstance(o, set) else str(o)) + '\n')
@@ -2221,6 +2385,8 @@ def cmd_analyze(a):
 
 
 def cmd_search(a):
+    # Read the existing JSON Lines artifact from disk and print ranked local
+    # BM25 matches. The file handle follows the existing open() behavior.
     chunks = [json.loads(l) for l in open(a.chunks, encoding='utf-8')]
     for score, c in bm25_search(chunks, a.query, a.k, set(a.kind) if a.kind else None):
         print(f"{score:7.2f}  {c['id']}")
@@ -2229,6 +2395,7 @@ def cmd_search(a):
 
 
 def main(argv=None):
+    # argparse validates CLI input and dispatches to the selected subcommand.
     ap = argparse.ArgumentParser(description='COBOL semantic chunker / static analyzer for RAG')
     sub = ap.add_subparsers(dest='cmd', required=True)
     an = sub.add_parser('analyze')

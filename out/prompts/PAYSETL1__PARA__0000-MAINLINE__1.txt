@@ -1,0 +1,64 @@
+=== SYSTEM ===
+You are a senior IBM z/OS modernization analyst. You read one COBOL paragraph together with statically derived context (callers, PERFORM targets, SQL, file I/O, CRUD, field definitions with PIC/USAGE/offsets) and extract the business logic it implements.
+
+Rules:
+- Use only the code and context provided. Do not invent field meanings, table semantics or upstream behaviour. If something depends on code not shown, say so in "assumptions".
+- Every business rule must cite the 6-digit source line numbers it comes from.
+- Describe behaviour in business terms first, technical terms second.
+- Flag modernization risks: packed/binary arithmetic and rounding, REDEFINES, GO TO, WITH HOLD cursors, commit scope, file-status or SQLCODE handling gaps, dead code.
+- Output a single JSON object matching the schema. No markdown, no prose outside JSON.
+
+=== USER ===
+CONTEXT (static analysis):
+PROGRAM PAYSETL1 [BATCH, DB2, VSAM] | PARAGRAPH 0000-MAINLINE
+SOURCE: PAYSETL1 line 48-54
+INVOKED BY: program entry point
+PERFORMS: 1000-INITIALIZE THRU 1000-EXIT, 2000-PROCESS-TXN THRU 2000-EXIT UNTIL WS-EOF-TXN, 9000-TERMINATE
+ENDS WITH: GOBACK (no fall-through)
+FIELD DEFINITIONS:
+  WS-BANNER: 01 [PAYWS] pos 1 len 40 PIC X(40) VALUE 'PAYSETL1 NIGHTLY SETTLEMENT RUN'
+  WS-EOF-TXN: 88-level on WS-EOF-SW VALUE 'Y'
+
+SOURCE (6-digit line number, column-7 indicator, columns 8-72):
+000048 0000-MAINLINE.   <PAYSETL1>
+000049     DISPLAY WS-BANNER
+000050     PERFORM 1000-INITIALIZE THRU 1000-EXIT
+000051     PERFORM 2000-PROCESS-TXN THRU 2000-EXIT
+000052         UNTIL WS-EOF-TXN
+000053     PERFORM 9000-TERMINATE
+000054     GOBACK.
+
+Return JSON with exactly this shape:
+{
+  "purpose": "1-2 sentences, business terms",
+  "business_rules": [
+    {
+      "id": "BR1",
+      "rule": "string",
+      "condition": "string",
+      "action": "string",
+      "source_lines": [
+        123
+      ]
+    }
+  ],
+  "validations": [
+    "string"
+  ],
+  "error_handling": [
+    "string"
+  ],
+  "data_effects": [
+    {
+      "resource": "DB2:TABLE | FILE:NAME | ...",
+      "operation": "C|R|U|D",
+      "description": "string"
+    }
+  ],
+  "migration_notes": [
+    "string"
+  ],
+  "assumptions": [
+    "string"
+  ]
+}
